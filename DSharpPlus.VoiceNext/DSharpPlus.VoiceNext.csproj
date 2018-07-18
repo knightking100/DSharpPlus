@@ -21,4 +21,16 @@
     <ProjectReference Include="..\DSharpPlus\DSharpPlus.csproj" />
   </ItemGroup>
   
+  <ItemGroup Condition="'$(TargetFramework)' == 'net47'">
+    <PackageReference Include="Sodium.Core">
+      <Version>1.2.0</Version>
+    </PackageReference>
+  </ItemGroup>
+  
+  <ItemGroup Condition="'$(TargetFramework)' == 'netstandard2.0'">
+    <PackageReference Include="Sodium.Core">
+      <Version>1.2.0</Version>
+    </PackageReference>
+  </ItemGroup>
+  
 </Project>

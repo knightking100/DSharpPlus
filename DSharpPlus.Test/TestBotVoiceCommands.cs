@@ -10,6 +10,7 @@ using DSharpPlus.CommandsNext;
 using DSharpPlus.CommandsNext.Attributes;
 using DSharpPlus.EventArgs;
 using DSharpPlus.VoiceNext;
+using NAudio.Wave;
 
 namespace DSharpPlus.Test
 {
@@ -161,34 +162,22 @@ namespace DSharpPlus.Test
                 // borrowed from
                 // https://github.com/RogueException/Discord.Net/blob/5ade1e387bb8ea808a9d858328e2d3db23fe0663/docs/guides/voice/samples/audio_create_ffmpeg.cs
 
-                var ffmpeg_inf = new ProcessStartInfo
+                var fmt = new WaveFormat(48000, 16, 2);
+                using (var wav = new AudioFileReader(snd))
+                using (var pcm = new MediaFoundationResampler(wav, fmt))
                 {
-                    FileName = "ffmpeg",
-                    Arguments = $"-i \"{snd}\" -ac 2 -f s16le -ar 48000 pipe:1",
-                    UseShellExecute = false,
-                    RedirectStandardOutput = true,
-                    RedirectStandardError = true
-                };
-                var ffmpeg = Process.Start(ffmpeg_inf);
-                var ffout = ffmpeg.StandardOutput.BaseStream;
+                    pcm.ResamplerQuality = 60;
+                    var bs = fmt.AverageBytesPerSecond / 50;
+                    var buff = new byte[bs];
+                    int bc = 0;
 
-                using (var ms = new MemoryStream()) // if ffmpeg quits fast, that'll hold the data
-                {
-                    await ffout.CopyToAsync(ms).ConfigureAwait(false);
-                    ms.Position = 0;
-
-                    var buff = new byte[3840]; // buffer to hold the PCM data
-                    var br = 0;
-                    while ((br = ms.Read(buff, 0, buff.Length)) > 0)
+                    while ((bc = pcm.Read(buff, 0, bs)) > 0)
                     {
-                        if (br < buff.Length) // it's possible we got less than expected, let's null the remaining part of the buffer
-                            for (var i = br; i < buff.Length; i++)
+                        if (bc < bs)
+                            for (var i = 0; i < bs; i++)
                                 buff[i] = 0;
 
-                        if (this.Volume != 1.0)
-                            this.RescaleVolume(buff);
-
-                        await vnc.SendAsync(buff, 20).ConfigureAwait(false); // we're sending 20ms of data
+                        await vnc.SendAsync(buff, 20, fmt.BitsPerSample);
                     }
                 }
             }

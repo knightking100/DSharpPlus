@@ -1,4 +1,7 @@
-﻿using System;
+﻿#if (NETSTANDARD2_0 || NET47)
+using Sodium;
+#endif
+using System;
 using System.Collections.Concurrent;
 using System.Collections.ObjectModel;
 using System.Diagnostics;
@@ -93,8 +96,11 @@ namespace DSharpPlus.VoiceNext
         internal bool Resume { get; set; }
 
         private VoiceNextConfiguration Configuration { get; }
-        private OpusCodec Opus { get; set; }
+        //private OpusCodec Opus { get; set; }
+        private OpusTestCodec OpusTest { get; set; }
+#if !(NETSTANDARD2_0 || NET47)
         private SodiumCodec Sodium { get; set; }
+#endif
         private RtpCodec Rtp { get; set; }
         private double SynchronizerTicks { get; set; }
         private double SynchronizerResolution { get; set; }
@@ -158,8 +164,11 @@ namespace DSharpPlus.VoiceNext
             this.TokenSource = new CancellationTokenSource();
 
             this.Configuration = config;
-            this.Opus = new OpusCodec(48000, 2, this.Configuration.VoiceApplication);
+            //this.Opus = new OpusCodec(48000, 2, this.Configuration.VoiceApplication);
+            this.OpusTest = new OpusTestCodec(48000, 2, this.Configuration.VoiceApplication);
+#if !(NETSTANDARD2_0 || NET47)
             this.Sodium = new SodiumCodec();
+#endif
             this.Rtp = new RtpCodec();
 
             this.ServerData = server;
@@ -275,9 +284,16 @@ namespace DSharpPlus.VoiceNext
             await this.PlaybackSemaphore.WaitAsync().ConfigureAwait(false);
 
             var rtp = this.Rtp.Encode(this.Sequence, this.Timestamp, this.SSRC);
+            
+            //var dat = this.Opus.Encode(pcmData, 0, pcmData.Length, bitRate);
+            //dat = this.Sodium.Encode(dat, this.Rtp.MakeNonce(rtp), this.Key);
 
-            var dat = this.Opus.Encode(pcmData, 0, pcmData.Length, bitRate);
+            var dat = this.OpusTest.Encode(pcmData, 0, pcmData.Length, bitRate);
+#if (NETSTANDARD2_0 || NET47)
+            dat = SecretBox.Create(dat, this.Rtp.MakeNonce(rtp), this.Key);
+#else
             dat = this.Sodium.Encode(dat, this.Rtp.MakeNonce(rtp), this.Key);
+#endif
             dat = this.Rtp.Encode(rtp, dat);
 
             if (this.SynchronizerTicks == 0)
@@ -339,7 +355,11 @@ namespace DSharpPlus.VoiceNext
                     data = this.Rtp.Decode(data, header);
 
                     var nonce = this.Rtp.MakeNonce(header);
+#if (NETSTANDARD2_0 || NET47)
+                    data = SecretBox.Open(data, nonce, this.Key);
+#else
                     data = this.Sodium.Decode(data, nonce, this.Key);
+#endif
 
                     // following is thanks to code from Eris
                     // https://github.com/abalabahaha/eris/blob/master/lib/voice/VoiceConnection.js#L623
@@ -368,8 +388,8 @@ namespace DSharpPlus.VoiceNext
                         }
                         // TODO: consider implementing RFC 5285, 4.3. Two-Byte Header
                     }
-
-                    data = this.Opus.Decode(data, doff, data.Length - doff);
+                    data = this.OpusTest.Decode(data, doff, data.Length - doff);
+                    //data = this.Opus.Decode(data, doff, data.Length - doff);
                 }
                 catch { continue; }
 
@@ -479,9 +499,11 @@ namespace DSharpPlus.VoiceNext
             catch (Exception)
             { }
 
-            this.Opus?.Dispose();
-            this.Opus = null;
+            //this.Opus?.Dispose();
+            this.OpusTest = null;
+#if !(NETSTANDARD2_0 || NET47)
             this.Sodium = null;
+#endif
             this.Rtp = null;
 
             if (this.VoiceDisconnected != null)
