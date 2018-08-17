@@ -45,6 +45,7 @@ namespace DSharpPlus
         internal bool _guildDownloadCompleted = false;
 
         internal RingBuffer<DiscordMessage> MessageCache { get; }
+		internal StatusUpdate _status = null;
         #endregion
 
         #region Public Variables
@@ -217,12 +218,26 @@ namespace DSharpPlus
         /// Connects to the gateway
         /// </summary>
         /// <returns></returns>
-        public async Task ConnectAsync()
+        public async Task ConnectAsync(DiscordActivity activity = null, UserStatus ? status = null, DateTimeOffset? idlesince = null)
         {
             var w = 7500;
             var i = 5;
             var s = false;
             Exception cex = null;
+
+			if (activity == null && status == null && idlesince == null)
+				this._status = null;
+			else
+			{
+				var since_unix = idlesince != null ? (long?)Utilities.GetUnixTime(idlesince.Value) : null;
+				this._status = new StatusUpdate()
+				{
+					Activity = new TransportActivity(activity),
+					Status = status ?? UserStatus.Online,
+					IdleSince = since_unix,
+					IsAFK = idlesince != null
+				};
+			}
 
             if (this.Configuration.TokenType != TokenType.Bot)
                 this.DebugLogger.LogMessage(LogLevel.Warning, "DSharpPlus", "You are logging in with a token that is not a bot token. This is not officially supported by Discord, and can result in your account being terminated if you aren't careful.", DateTime.Now);
@@ -337,7 +352,7 @@ namespace DSharpPlus
                 }
                 catch (Exception ex)
                 {
-                    DebugLogger.LogMessage(LogLevel.Error, "Websocket", $"Socket swallowed an exception: {ex} This is bad!!!!", DateTime.Now);
+                    DebugLogger.LogMessage(LogLevel.Error, "Websocket", $"Socket swallowed an exception: {ex}", DateTime.Now);
                 }
             }
 
@@ -695,7 +710,7 @@ namespace DSharpPlus
                     await OnGuildMemberUpdateEventAsync(dat["user"].ToObject<TransportUser>(), this._guilds[gid], dat["roles"].ToObject<IEnumerable<ulong>>(), (string)dat["nick"]).ConfigureAwait(false);
                     break;
 
-                case "guild_member_chunk":
+                case "guild_members_chunk":
                     gid = (ulong)dat["guild_id"];
                     await OnGuildMembersChunkEventAsync(dat["members"].ToObject<IEnumerable<TransportMember>>(), this._guilds[gid]).ConfigureAwait(false);
                     break;
@@ -869,7 +884,7 @@ namespace DSharpPlus
 
                     var raw_guild = raw_guild_index[xg.Id];
                     var raw_members = (JArray)raw_guild["members"];
-                    xg._members = new List<DiscordMember>();
+                    xg._members = new HashSet<DiscordMember>();
 
                     if (raw_members != null)
                         foreach (var xj in raw_members)
@@ -1079,7 +1094,7 @@ namespace DSharpPlus
             if (guild._voice_states == null)
                 guild._voice_states = new List<DiscordVoiceState>();
             if (guild._members == null)
-                guild._members = new List<DiscordMember>();
+                guild._members = new HashSet<DiscordMember>();
 
             this.UpdateCachedGuild(event_guild, rawMembers);
 
@@ -1141,7 +1156,7 @@ namespace DSharpPlus
             if (guild._voice_states == null)
                 guild._voice_states = new List<DiscordVoiceState>();
             if (guild._members == null)
-                guild._members = new List<DiscordMember>();
+                guild._members = new HashSet<DiscordMember>();
 
             this.UpdateCachedGuild(event_guild, rawMembers);
 
@@ -1364,9 +1379,7 @@ namespace DSharpPlus
         {
             var mbr = guild.Members.FirstOrDefault(xm => xm.Id == user.Id) ?? new DiscordMember(new DiscordUser(user)) { Discord = this, _guild_id = guild.Id };
 
-            var index = guild._members.FindIndex(xm => xm.Id == mbr.Id);
-            if (index > -1)
-                guild._members.RemoveAt(index);
+            guild._members.Remove(mbr);
             guild.MemberCount--;
 
             var ea = new GuildMemberRemoveEventArgs(this)
@@ -1813,17 +1826,20 @@ namespace DSharpPlus
 
         internal async Task OnGuildMembersChunkEventAsync(IEnumerable<TransportMember> members, DiscordGuild guild)
         {
-            var ids = guild.Members.Select(xm => xm.Id);
-            var mbrs = members.Select(xtm => new DiscordMember(xtm) { Discord = this, _guild_id = guild.Id })
-                .Where(xm => !ids.Contains(xm.Id));
+            var mbrs = new HashSet<DiscordMember>();
 
-            guild._members.AddRange(mbrs);
+            foreach (var xtm in members)
+            {
+                var mbr = new DiscordMember(xtm) { Discord = this, _guild_id = guild.Id };
+                guild._members.Add(mbr);
+                mbrs.Add(mbr);
+            }
             guild.MemberCount = guild._members.Count;
 
             var ea = new GuildMembersChunkEventArgs(this)
             {
                 Guild = guild,
-                Members = new ReadOnlyCollection<DiscordMember>(new List<DiscordMember>(mbrs))
+                Members = new ReadOnlySet<DiscordMember>(mbrs)
             };
             await this._guildMembersChunked.InvokeAsync(ea).ConfigureAwait(false);
         }
@@ -1989,7 +2005,7 @@ namespace DSharpPlus
             {
                 this.DebugLogger.LogMessage(LogLevel.Debug, "Websocket", "Received false in OP 9 - Starting a new session", DateTime.Now);
                 _sessionId = "";
-                await SendIdentifyAsync().ConfigureAwait(false);
+                await SendIdentifyAsync(_status).ConfigureAwait(false);
             }
         }
 
@@ -2003,7 +2019,7 @@ namespace DSharpPlus
             this._heartbeatTask.Start();
 
             if (_sessionId == "")
-                await SendIdentifyAsync().ConfigureAwait(false);
+                await SendIdentifyAsync(_status).ConfigureAwait(false);
             else
                 await SendResumeAsync().ConfigureAwait(false);
 
@@ -2067,6 +2083,9 @@ namespace DSharpPlus
                 IsAFK = idleSince != null,
                 Status = userStatus ?? UserStatus.Online
             };
+
+			// Solution to have status persist between sessions
+			this._status = status;
             var status_update = new GatewayPayload
             {
                 OpCode = GatewayOpCode.StatusUpdate,
@@ -2136,18 +2155,19 @@ namespace DSharpPlus
             Interlocked.Increment(ref this._skippedHeartbeats);
         }
 
-        internal Task SendIdentifyAsync()
+        internal Task SendIdentifyAsync(StatusUpdate status)
         {
-            var identify = new GatewayIdentify
-            {
-                Token = Utilities.GetFormattedToken(this),
-                Compress = this.Configuration.GatewayCompressionLevel == GatewayCompressionLevel.Payload,
-                LargeThreshold = this.Configuration.LargeThreshold,
-                ShardInfo = new ShardInfo
-                {
-                    ShardId = this.Configuration.ShardId,
-                    ShardCount = this.Configuration.ShardCount
-                }
+			var identify = new GatewayIdentify
+			{
+				Token = Utilities.GetFormattedToken(this),
+				Compress = this.Configuration.GatewayCompressionLevel == GatewayCompressionLevel.Payload,
+				LargeThreshold = this.Configuration.LargeThreshold,
+				ShardInfo = new ShardInfo
+				{
+					ShardId = this.Configuration.ShardId,
+					ShardCount = this.Configuration.ShardCount
+				},
+				Presence = status
             };
             var payload = new GatewayPayload
             {
